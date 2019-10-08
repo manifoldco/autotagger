@@ -1,4 +1,4 @@
-module github.com/manifoldco/kubernetes-manifest/github/actions/autotagger
+module github.com/manifoldco/autotagger
 
 require (
 	github.com/google/go-github/v24 v24.0.1
