@@ -16,7 +16,6 @@ import (
 	"log"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/google/go-github/v24/github"
 	"github.com/hashicorp/go-version"
@@ -87,7 +86,7 @@ func main() {
 
 	owner, repo := se.GetRepo().GetOwner().GetLogin(), se.GetRepo().GetName()
 
-	version, err := getNewVersion(ctx, c, owner, repo, ref)
+	version, err := getNewVersion(ctx, c, owner, repo)
 	if err != nil {
 		fatal(err)
 	}
@@ -111,7 +110,7 @@ func main() {
 	fmt.Println("Done")
 }
 
-func getNewVersion(ctx context.Context, c *github.Client, owner, repo, commitRef string) (string, error) {
+func getNewVersion(ctx context.Context, c *github.Client, owner, repo string) (string, error) {
 	last, err := version.NewSemver("v0.0.0")
 	if err != nil {
 		return "", fmt.Errorf("could not create base version: %v", err)
@@ -158,19 +157,17 @@ func getNewVersion(ctx context.Context, c *github.Client, owner, repo, commitRef
 		return "", errors.New("could not find any versions")
 	}
 
-	return nextVersion(last, commitRef), nil
+	return nextVersion(last), nil
 }
 
-func nextVersion(v *version.Version, ref string) string {
+func nextVersion(v *version.Version) string {
 	segs := v.Segments()
 	diff := 3 - len(segs)
 	for i := 0; i < diff; i++ {
 		segs = append(segs, 0)
 	}
 
-	metadata := fmt.Sprintf("%s.%.12s", time.Now().UTC().Format("2006-01-02"), ref)
-
-	return fmt.Sprintf("v%d.%d.%d+%s", segs[0], segs[1], segs[2]+1, metadata)
+	return fmt.Sprintf("v%d.%d.%d", segs[0], segs[1], segs[2]+1)
 }
 
 func ptrString(s string) *string { return &s }
