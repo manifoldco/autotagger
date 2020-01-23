@@ -15,9 +15,10 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 
-	"github.com/google/go-github/v24/github"
+	"github.com/google/go-github/v29/github"
 	"github.com/hashicorp/go-version"
 	"golang.org/x/oauth2"
 )
@@ -28,10 +29,12 @@ var (
 )
 
 func usage() {
-	fmt.Println("Usage: prbot (merge|approve)")
+	fmt.Println("Usage: autotagger")
 	fmt.Println("You can also set the following environment variables:")
 	fmt.Println("    NO_EX_CONFIG     disables the EX_CONFIG returns, returning success instead")
 	fmt.Println("    NEVER_FAIL       in cases where the bot should fail, it will return EX_CONFIG instead")
+	fmt.Println("    FILE_REGEXP      only tag when changes since the last tag include files that match this regex (default: .*).")
+
 	os.Exit(fatalExit)
 }
 
@@ -44,6 +47,13 @@ func main() {
 	if os.Getenv("NEVER_FAIL") == "true" {
 		fatalExit = exConfig
 	}
+
+	fileRE := ".*"
+	if fe, ok := os.LookupEnv("FILE_REGEXP"); ok {
+		fileRE = fe
+	}
+
+	fileMatch := regexp.MustCompile(fileRE)
 
 	// limit this action to pull requests only
 	triggerName := os.Getenv("GITHUB_EVENT_NAME")
@@ -85,15 +95,23 @@ func main() {
 	ctx := context.Background()
 
 	owner, repo := se.GetRepo().GetOwner().GetLogin(), se.GetRepo().GetName()
+	cli := &client{c, owner, repo}
 
-	version, err := getNewVersion(ctx, c, owner, repo)
+	lastVersion, err := cli.getLastVersion(ctx)
 	if err != nil {
 		fatal(err)
 	}
 
+	if !cli.shouldTag(ctx, lastVersion, ref, fileMatch) {
+		fmt.Println("No changes matching pattern. This code won't be tagged.")
+		return
+	}
+
+	version := nextVersion(lastVersion)
+
 	_, _, err = c.Git.CreateRef(ctx, owner, repo, &github.Reference{
-		Ref:    ptrString(fmt.Sprintf("refs/tags/%s", version)),
-		Object: &github.GitObject{SHA: ptrString(ref), Type: ptrString("commit")},
+		Ref:    github.String(fmt.Sprintf("refs/tags/%s", version)),
+		Object: &github.GitObject{SHA: &ref, Type: github.String("commit")},
 	})
 	if err != nil {
 		fatalf("could not create tag for ref %s: %v", ref, err)
@@ -102,7 +120,7 @@ func main() {
 	fmt.Println("Tagged version", version)
 
 	_, _, err = c.Issues.CreateComment(ctx, owner, repo, se.PullRequest.GetNumber(), &github.IssueComment{
-		Body: ptrString(fmt.Sprintf("Your friendly autotagging bot has tagged this as release **%s**", version)),
+		Body: github.String(fmt.Sprintf("Your friendly autotagging bot has tagged this as release **%s**", version)),
 	})
 	if err != nil {
 		fatalf("could not create comment: %v", err)
@@ -110,10 +128,16 @@ func main() {
 	fmt.Println("Done")
 }
 
-func getNewVersion(ctx context.Context, c *github.Client, owner, repo string) (string, error) {
+type client struct {
+	c     *github.Client
+	owner string
+	repo  string
+}
+
+func (c *client) getLastVersion(ctx context.Context) (*version.Version, error) {
 	last, err := version.NewSemver("v0.0.0")
 	if err != nil {
-		return "", fmt.Errorf("could not create base version: %v", err)
+		return nil, fmt.Errorf("could not create base version: %v", err)
 	}
 
 	page := 1
@@ -124,9 +148,9 @@ func getNewVersion(ctx context.Context, c *github.Client, owner, repo string) (s
 				Page: page,
 			},
 		}
-		refs, resp, err := c.Git.ListRefs(ctx, owner, repo, lo)
+		refs, resp, err := c.c.Git.ListRefs(ctx, c.owner, c.repo, lo)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 
 		for _, r := range refs {
@@ -154,10 +178,27 @@ func getNewVersion(ctx context.Context, c *github.Client, owner, repo string) (s
 	}
 
 	if last.String() == "v0.0.0" {
-		return "", errors.New("could not find any versions")
+		return nil, errors.New("could not find any versions")
 	}
 
-	return nextVersion(last), nil
+	return last, nil
+}
+
+func (c *client) shouldTag(ctx context.Context, last *version.Version, ref string, fileMatch *regexp.Regexp) bool {
+
+	// repositories service compare commits
+	cmp, _, err := c.c.Repositories.CompareCommits(ctx, c.owner, c.repo, last.String(), ref)
+	if err != nil {
+		fatal("error getting diff:", err)
+	}
+
+	for _, cf := range cmp.Files {
+		if fileMatch.MatchString(*cf.Filename) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func nextVersion(v *version.Version) string {
@@ -169,8 +210,6 @@ func nextVersion(v *version.Version) string {
 
 	return fmt.Sprintf("v%d.%d.%d", segs[0], segs[1], segs[2]+1)
 }
-
-func ptrString(s string) *string { return &s }
 
 // fatal is like log.Fatal but respects NEVER_FAIL
 func fatal(a ...interface{}) {
