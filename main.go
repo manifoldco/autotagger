@@ -34,6 +34,7 @@ func usage() {
 	fmt.Println("    NO_EX_CONFIG     disables the EX_CONFIG returns, returning success instead")
 	fmt.Println("    NEVER_FAIL       in cases where the bot should fail, it will return EX_CONFIG instead")
 	fmt.Println("    FILE_REGEXP      only tag when changes since the last tag include files that match this regex (default: .*).")
+	fmt.Println("    TAG_PREFIX       prefix your tag with this. Great for Go modules in a subdir!")
 
 	os.Exit(fatalExit)
 }
@@ -54,6 +55,8 @@ func main() {
 	}
 
 	fileMatch := regexp.MustCompile(fileRE)
+
+	prefix := os.Getenv("TAG_PREFIX")
 
 	// limit this action to pull requests only
 	triggerName := os.Getenv("GITHUB_EVENT_NAME")
@@ -97,17 +100,19 @@ func main() {
 	owner, repo := se.GetRepo().GetOwner().GetLogin(), se.GetRepo().GetName()
 	cli := &client{c, owner, repo}
 
-	lastVersion, err := cli.getLastVersion(ctx)
+	lastVersion, err := cli.getLastVersion(ctx, prefix)
 	if err != nil {
 		fatal(err)
 	}
 
-	if !cli.shouldTag(ctx, lastVersion, ref, fileMatch) {
+	base := prefix + "v" + lastVersion.String()
+
+	if !cli.shouldTag(ctx, base, ref, fileMatch) {
 		fmt.Println("No changes matching pattern. This code won't be tagged.")
 		return
 	}
 
-	version := nextVersion(lastVersion)
+	version := nextVersion(lastVersion, prefix)
 
 	_, _, err = c.Git.CreateRef(ctx, owner, repo, &github.Reference{
 		Ref:    github.String(fmt.Sprintf("refs/tags/%s", version)),
@@ -134,7 +139,7 @@ type client struct {
 	repo  string
 }
 
-func (c *client) getLastVersion(ctx context.Context) (*version.Version, error) {
+func (c *client) getLastVersion(ctx context.Context, prefix string) (*version.Version, error) {
 	last, err := version.NewSemver("v0.0.0")
 	if err != nil {
 		return nil, fmt.Errorf("could not create base version: %v", err)
@@ -156,7 +161,7 @@ func (c *client) getLastVersion(ctx context.Context) (*version.Version, error) {
 		for _, r := range refs {
 			fmt.Println("Ref:", r.GetRef())
 
-			tag := strings.TrimPrefix(r.GetRef(), "refs/tags/")
+			tag := strings.TrimPrefix(r.GetRef(), "refs/tags/"+prefix)
 			v, err := version.NewSemver(tag)
 			if err != nil {
 				fmt.Printf("Tag %v is not a valid semver, ignoring", tag)
@@ -184,10 +189,10 @@ func (c *client) getLastVersion(ctx context.Context) (*version.Version, error) {
 	return last, nil
 }
 
-func (c *client) shouldTag(ctx context.Context, last *version.Version, ref string, fileMatch *regexp.Regexp) bool {
+func (c *client) shouldTag(ctx context.Context, base, merge string, fileMatch *regexp.Regexp) bool {
 
 	// repositories service compare commits
-	cmp, _, err := c.c.Repositories.CompareCommits(ctx, c.owner, c.repo, "v"+last.String(), ref)
+	cmp, _, err := c.c.Repositories.CompareCommits(ctx, c.owner, c.repo, base, merge)
 	if err != nil {
 		fatal("error getting diff:", err)
 	}
@@ -201,14 +206,14 @@ func (c *client) shouldTag(ctx context.Context, last *version.Version, ref strin
 	return false
 }
 
-func nextVersion(v *version.Version) string {
+func nextVersion(v *version.Version, prefix string) string {
 	segs := v.Segments()
 	diff := 3 - len(segs)
 	for i := 0; i < diff; i++ {
 		segs = append(segs, 0)
 	}
 
-	return fmt.Sprintf("v%d.%d.%d", segs[0], segs[1], segs[2]+1)
+	return fmt.Sprintf("%sv%d.%d.%d", prefix, segs[0], segs[1], segs[2]+1)
 }
 
 // fatal is like log.Fatal but respects NEVER_FAIL
