@@ -177,7 +177,7 @@ func (c *client) getLastVersion(ctx context.Context) (*version.Version, error) {
 		page++
 	}
 
-	if last.String() == "v0.0.0" {
+	if last.String() == "0.0.0" {
 		return nil, errors.New("could not find any versions")
 	}
 
@@ -187,7 +187,7 @@ func (c *client) getLastVersion(ctx context.Context) (*version.Version, error) {
 func (c *client) shouldTag(ctx context.Context, last *version.Version, ref string, fileMatch *regexp.Regexp) bool {
 
 	// repositories service compare commits
-	cmp, _, err := c.c.Repositories.CompareCommits(ctx, c.owner, c.repo, last.String(), ref)
+	cmp, _, err := c.c.Repositories.CompareCommits(ctx, c.owner, c.repo, "v"+last.String(), ref)
 	if err != nil {
 		fatal("error getting diff:", err)
 	}
